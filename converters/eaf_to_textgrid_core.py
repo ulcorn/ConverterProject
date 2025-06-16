@@ -33,10 +33,10 @@ def _ms_or_slot(value: Union[str, int, float]) -> Union[str, float]:
 
 def iter_annotations(raw_ann) -> Iterable[Sequence]:
     """
-    Привести raw_ann (dict | list) к последовательности
+    Привести raw_ann к последовательности
     (start_any, end_any, text), где start/end могут быть:
-        • float — уже секунды,
-        • str   — id тайм-слота ('ts3').
+        float — уже секунды,
+        str   — id тайм-слота ('ts3').
     """
     raw_iter = raw_ann.values() if isinstance(raw_ann, dict) else raw_ann
 
@@ -57,10 +57,10 @@ def to_intervals(
     intervals: List[Interval] = []
 
     for start_raw, end_raw, text in ann_iter:
-        # если уже float — это секунды
+
         if isinstance(start_raw, float) and isinstance(end_raw, float):
             start_sec, end_sec = start_raw, end_raw
-        else:  # иначе ищем id в карте
+        else:
             try:
                 start_sec = ts_map[str(start_raw)]
                 end_sec = ts_map[str(end_raw)]
@@ -69,7 +69,7 @@ def to_intervals(
                       f"{start_raw!r} / {end_raw!r}", file=sys.stderr)
                 continue
 
-        if end_sec < start_sec:  # на случай кривой разметки
+        if end_sec < start_sec:
             start_sec, end_sec = end_sec, start_sec
 
         intervals.append((start_sec, end_sec, text.strip()))

@@ -1,6 +1,5 @@
 """
 Обёртка над eaf_to_textgrid_core.eaf_to_textgrid
-добавляет параметр `mode` («short» | «long»).
 """
 
 from pathlib import Path
@@ -9,41 +8,35 @@ from typing import Literal
 from praatio import textgrid
 import pympi
 
-# импортируем ВАШ исходный код как отдельный модуль
 from . import eaf_to_textgrid_core as core
+from . import ConversionError
 
 Mode = Literal["short", "long"]
 
 
 def convert(input_eaf: str | Path, output_tg: str | Path, mode: Mode = "short") -> None:
     """
-    Конвертирует .eaf → .TextGrid (short / long).
-    Не меняет исходный core‑код – просто повторяет его логику,
-    но вызывая `tg.save(..., format="long_textgrid")`, если нужно.
+    Конвертирует .eaf → .TextGrid (short или long).
     """
     path_in, path_out = Path(input_eaf), Path(output_tg)
 
     if not path_in.is_file():
-        raise FileNotFoundError(path_in)
+        print(f"Файл не найден: {path_in}")
+        return
 
-    # ► Повторяем шаги core‑функции. Она компактная – копируем здесь:
-    elan = pympi.Elan.Eaf(str(path_in))
-    ts_map = core.build_ts_map(elan)
-    max_time = max(ts_map.values(), default=0.0)
+    # Проверяем расширение
+    if path_in.suffix.lower() not in {".eaf", ".xml"}:
+        print("Это не тот файл")
+        return
 
-    tg = textgrid.Textgrid(minTimestamp=0.0, maxTimestamp=max_time)
+    try:
+        if mode not in ("short", "long"):
+            raise ValueError(f"Неизвестный режим: {mode}")
 
-    for tier_name in elan.get_tier_names():
-        raw_ann = elan.get_annotation_data_for_tier(tier_name)
-        intervals = core.to_intervals(core.iter_annotations(raw_ann), ts_map)
+        core.eaf_to_textgrid(path_in, path_out)
 
-        tg.addTier(textgrid.IntervalTier(
-            name=tier_name,
-            entries=intervals,
-            minT=0.0,
-            maxT=max_time,
-        ))
-
-    tg_fmt = "short_textgrid" if mode == "short" else "long_textgrid"
-
-    tg.save(str(path_out), format=tg_fmt, includeBlankSpaces=True)
+        if mode == "long":
+            tg = textgrid.openTextgrid(str(path_out), includeEmptyIntervals=True)
+            tg.save(str(path_out), format="long_textgrid", includeBlankSpaces=True)
+    except (textgrid.TGReadWriteError, ValueError, Exception) as exc:
+        raise ConversionError(f"EAF → TextGrid: {exc}") from exc

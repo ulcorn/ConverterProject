@@ -1,30 +1,39 @@
-"""
-Обёртка над textgrid_to_eaf_core.convert.
-Параметр `mode` используется только для проверки входного файла:
-короткий (`short`) или длинный (`long`) синтаксис TextGrid.
-Сам core‑парсер умеет определять это автоматически, так что здесь
-мы просто вызываем convert «как есть».
-"""
-
 from pathlib import Path
 from typing import Literal
+from xml.etree import ElementTree as ET
 
 from . import textgrid_to_eaf_core as core
+from . import ConversionError
 
 Mode = Literal["short", "long"]
 
 
-def convert(input_tg: str | Path, output_eaf: str | Path, mode: Mode = "short") -> None:
+def convert(input_tg: str | Path,
+            output_eaf: str | Path,
+            *,
+            mode: Mode = "short") -> None:
     """
-    Конвертация .TextGrid → .eaf.
-    Вызов исходной функции `core.convert`, не меняя её.
+    Конвертация *.TextGrid* → *.eaf* с нормализованным отловом ошибок.
     """
-    path_in, path_out = Path(input_tg), Path(output_eaf)
-    if not path_in.is_file():
-        raise FileNotFoundError(path_in)
+    try:
+        path_in = Path(input_tg)
+        path_out = Path(output_eaf)
 
-    # core.convert записывает файл рядом с входным,
-    # поэтому временно подменяем имя, а потом переносим.
-    core.convert(str(path_in))
-    produced = path_in.with_suffix(".eaf")
-    produced.rename(path_out)
+        if mode not in ("short", "long"):
+            raise ValueError(f"Неизвестный режим: {mode}")
+        if not path_in.is_file():
+            raise FileNotFoundError(path_in)
+        if path_in.suffix.lower() not in {".textgrid", ".tg"}:
+            raise ValueError("Файл должен иметь расширение .TextGrid / .tg")
+
+        core.convert(str(path_in))
+
+        produced = path_in.with_suffix(".eaf")
+        if not produced.exists():
+            raise RuntimeError("Ядро не создало выходной .eaf")
+
+        produced.replace(path_out)
+
+    except (FileNotFoundError, UnicodeDecodeError, ET.ParseError,
+            ValueError, RuntimeError, core.ConversionError) as exc:
+        raise ConversionError(f"TextGrid → EAF: {exc}") from exc

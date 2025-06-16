@@ -10,8 +10,20 @@ from xml.etree import ElementTree as ET
 
 @dataclass
 class TextGrid:
+    """
+        Представляет TextGrid-файл (формат Praat) с несколькими уровнями (tiers),
+        содержащими интервалы или метки во времени.
+    """
+
     class Tier:
+        """
+           Базовый класс для уровня в TextGrid, хранит имя, диапазон и элементы.
+        """
+
         def __init__(self, name: str, start: str = '1e9', end: str = '0.0', size: int = 0) -> None:
+            """
+            Инициализация уровня.
+            """
             self.name = name
             self.start = start
             self.end = end
@@ -19,11 +31,17 @@ class TextGrid:
             self.items = []
 
         def extend(self, item) -> None:
+            """
+            Добавляет элемент (интервал или точку) в уровень.
+            """
             self.items.append(item)
 
     class IntervalTier(Tier):
         @dataclass
         class Interval:
+            """
+            Представляет помеченный временной интервал.
+            """
             label: str
             start: str
             end: str
@@ -31,6 +49,9 @@ class TextGrid:
     class TextTier(Tier):
         @dataclass
         class Point:
+            """
+            Представляет помеченную временную точку.
+            """
             time: str
             label: str
 
@@ -41,6 +62,9 @@ class TextGrid:
 
     @staticmethod
     def write(filepath: str, textgrid: 'TextGrid') -> None:
+        """
+        Записывает объект TextGrid в файл в тексовом формате Praat.
+        """
         with open(filepath, 'w') as file:
             preface = 'File type = "ooTextFile"\nObject class = "TextGrid"\n'
             file.write(preface + '\n')
@@ -59,6 +83,15 @@ class TextGrid:
 
 
 def parse_textgrid(filepath: str) -> TextGrid:
+    """
+    Разбирает TextGrid-файл в объект TextGrid.
+
+    Args:
+        filepath: Путь до файла .TextGrid.
+
+    Returns:
+        TextGrid: Структура с уровнями и метками.
+    """
     with open(filepath) as file:
         lines = list(map(str.strip, file.readlines()))
         short_mode = lines[4][0].isdigit()
@@ -103,14 +136,31 @@ def parse_textgrid(filepath: str) -> TextGrid:
 
 @dataclass
 class EAF:
+    """
+    Представляет структуру аннотаций ELAN EAF.
+    """
+
     @dataclass
     class Tier:
+        """
+        Контейнер для аннотаций внутри уровня EAF.
+        """
+
         @dataclass
         class Annotation:
             pass
 
         @dataclass
         class AlignedAnnotation(Annotation):
+            """
+            Выравненная по времени аннотация.
+
+            Attributes:
+                value: Текст аннотации.
+                start_ref: Идентификатор начальной временной метки.
+                end_ref: Идентификатор конечной временной метки.
+                svg_ref: Опциональная ссылка на SVG.
+            """
             value: str
             start_ref: str
             end_ref: str
@@ -128,6 +178,12 @@ class EAF:
 
 
 def parse_eaf(filepath: str) -> EAF:
+    """
+    Разбирает EAF-файл (формат ELAN) в объект EAF.
+
+    :param filepath:
+    :return: Структура аннотаций и временных меток.
+    """
     eaf = EAF()
 
     root = ET.parse(filepath).getroot()
@@ -161,6 +217,14 @@ def parse_eaf(filepath: str) -> EAF:
 
 
 def write_eaf(path: str, eaf: 'EAF') -> None:
+    """
+    Записывает объект EAF в EAF/XML файл с выравниванием и ссылками.
+
+    Args:
+        path: Путь до выходного .eaf файла.
+        eaf: Экземпляр EAF для записи.
+    """
+
     def _eaf_to_etree_root(eaf: 'EAF') -> ET.Element:
         date = datetime.now(timezone(timedelta(hours=3))).isoformat()
 
@@ -173,7 +237,6 @@ def write_eaf(path: str, eaf: 'EAF') -> None:
             ET.SubElement(time_order, 'TIME_SLOT',
                           attrib={'TIME_SLOT_ID': time_slot_id, 'TIME_VALUE': eaf.time_slots[time_slot_id]})
 
-        # LINGUISTIC_TYPE_REF - ОТКУДА БРАТЬ???
         for tier_id in eaf.tiers:
             cur_tier = ET.SubElement(root, 'TIER', attrib={'TIER_ID': tier_id, 'LINGUISTIC_TYPE_REF': 'default-lt'})
             for annotation_id, annotation in eaf.tiers[tier_id].annotations.items():
@@ -202,33 +265,16 @@ def write_eaf(path: str, eaf: 'EAF') -> None:
         f.write(pretty_xml)
 
 
-def eaf_to_textgrid(eaf: EAF) -> TextGrid:
-    textgrid = TextGrid()
-    for tier_id, tier in eaf.tiers.items():
-        tier_start = 1e9
-        tier_end = 0.0
-        textgrid.tiers.append(TextGrid.Tier(tier_id))
-        for annotation_id, annotation in tier.annotations.items():
-            label = annotation.value
-            start = float(eaf.time_slots[annotation.start_ref]) / 1000.0
-            end = float(eaf.time_slots[annotation.end_ref]) / 1000.0
-
-            textgrid.tiers[-1].extend(TextGrid.IntervalTier.Interval(label, str(start), str(end)))
-
-            tier_start = min(tier_start, start)
-            tier_end = max(tier_end, end)
-            textgrid.tiers[-1].size += 1
-
-        textgrid.tiers[-1].start = str(tier_start)
-        textgrid.tiers[-1].end = str(tier_end)
-
-        textgrid.xmin = str(min(float(textgrid.xmin), tier_start))
-        textgrid.xmax = str(max(float(textgrid.xmax), tier_end))
-
-    return textgrid
-
-
 def textgrid_to_eaf(textgrid: TextGrid) -> EAF:
+    """
+    Конвертирует TextGrid-структуру в EAF-структуру.
+
+    Args:
+        textgrid: Объект TextGrid с уровнями и метками.
+
+    Returns:
+        EAF: Эквивалентный EAF объект.
+    """
     eaf = EAF()
 
     ts_id = 1
@@ -257,15 +303,7 @@ def textgrid_to_eaf(textgrid: TextGrid) -> EAF:
 
 
 def convert(filepath: str) -> None:
-    if filepath.endswith('.eaf') or filepath.endswith('.xml'):
-        try:
-            eaf = parse_eaf(filepath)
-            # path = filepath.split('.')[0] + '.TextGrid'
-            path = filepath.split('.')[0] + '.TextGrid'
-            TextGrid.write(path, eaf_to_textgrid(eaf))
-        except Exception as e:
-            raise 'Something went wrong'
-    else:
+    if filepath.endswith('.TextGrid'):
         textgrid = parse_textgrid(filepath)
         path = filepath.split('.')[0] + '.eaf'
         write_eaf(path, textgrid_to_eaf(textgrid))
