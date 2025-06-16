@@ -14,7 +14,3 @@ st.markdown(
 Выберите нужную страницу через боковое меню.
 """
 )
-
-st.sidebar.page_link("streamlit_app.py", label="О проекте", icon="ℹ️")
-st.sidebar.page_link("pages/1_EAF_to_TextGrid.py", label="EAF → TextGrid", icon="➡️")
-st.sidebar.page_link("pages/2_TextGrid_to_EAF.py", label="TextGrid → EAF", icon="⬅️")
