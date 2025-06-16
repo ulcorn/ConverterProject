@@ -9,7 +9,6 @@ st.set_page_config(
 st.title("EAF ↔ TextGrid Converter ")
 st.markdown(
     """
-# EAF ↔ TextGrid Streamlit App
 
 Двусторонний конвертер **ELAN (.eaf/.xml)** ⇄ **Praat (.TextGrid)**, который позволяет легко и без потерь преобразовывать разметку речи между форматами.
 
