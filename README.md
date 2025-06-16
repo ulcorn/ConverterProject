@@ -81,7 +81,7 @@ streamlit run streamlit_app.py
 
 * **При желании можно не создавать локально никаких файлов и сразу перейти по ссылке:**
   
-  [Перейти к приложению на Streamlit Cloud](https://converterproject-9caqoxr7qbx6ae22gscb4y.streamlit.app)
+  [Перейти к приложению на Streamlit Cloud](https://converterproject-3gfljv4nqhxksgsihmqgf6.streamlit.app)
 
 * **Short / Long TextGrid**
   * При конвертации *EAF → TextGrid* выбор формата влияет на аргумент `praatio.save(format="…")`. 
