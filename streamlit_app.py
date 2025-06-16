@@ -10,7 +10,7 @@ st.title("EAF ↔ TextGrid Converter ")
 st.markdown(
     """
 Приложение выполняет двустороннюю конвертацию между
-**ELAN.eaf** и **Praat TextGrid** (short/long) без изменения исходных файлов‑конвертеров.
+**ELAN.eaf** и **Praat TextGrid** (short/long) без изменения исходных файлов.
 Выберите нужную страницу через боковое меню.
 """
 )
