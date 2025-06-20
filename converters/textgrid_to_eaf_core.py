@@ -1,29 +1,131 @@
-import pathlib
 import sys
 import typing as tp
-
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from xml.dom import minidom
+from pathlib import Path
 from xml.etree import ElementTree as ET
+
+
+@dataclass
+class EAF:
+    """
+    Представляет структуру аннотаций ELAN EAF.
+    """
+
+    @dataclass
+    class Tier:
+        """
+        Контейнер для аннотаций внутри уровня EAF.
+        """
+
+        @dataclass
+        class Annotation:
+            pass
+
+        @dataclass
+        class AlignedAnnotation(Annotation):
+            """
+            Выравненная по времени аннотация.
+
+            Attributes:
+                value: Текст аннотации.
+                start_ref: Идентификатор начальной временной метки.
+                end_ref: Идентификатор конечной временной метки.
+                svg_ref: Опциональная ссылка на SVG.
+            """
+            value: str
+            start_ref: str
+            end_ref: str
+            svg_ref: str | None
+
+        @dataclass
+        class RefAnnotation(Annotation):
+            ref_id: str
+            prev_annot: str | None
+            value: str = ""
+
+        annotations: dict[str, 'EAF.Tier.Annotation'] = field(default_factory=dict)
+
+    time_slots: dict[str, str | None] = field(default_factory=dict)
+    tiers: dict[str, Tier] = field(default_factory=dict)
+
+
+def _eaf_to_etree_root(eaf: EAF) -> ET.Element:
+    date = datetime.now(timezone(timedelta(hours=3))).isoformat()
+    root = ET.Element('ANNOTATION_DOCUMENT', attrib={
+        'AUTHOR': '', 'DATE': date, 'VERSION': '1.0'
+    })
+
+    ET.SubElement(root, "LINGUISTIC_TYPE",
+                  attrib={"LINGUISTIC_TYPE_ID": "default-lt",
+                          "TIME_ALIGNABLE": "true"})
+
+    ET.SubElement(root, 'HEADER', attrib={'MEDIA_FILE': '',
+                                          'TIME_UNITS': 'milliseconds'})
+    time_order = ET.SubElement(root, 'TIME_ORDER')
+
+    for ts_id, ts_val in sorted(eaf.time_slots.items(),
+                                key=lambda kv: int(kv[1])):
+        ET.SubElement(time_order, 'TIME_SLOT',
+                      attrib={'TIME_SLOT_ID': ts_id, 'TIME_VALUE': ts_val or ""})
+
+    for tier_id, tier in eaf.tiers.items():
+        cur_tier = ET.SubElement(root, 'TIER', attrib={
+            'TIER_ID': tier_id,
+            'LINGUISTIC_TYPE_REF': 'default-lt'
+        })
+        for ann_id, annot in tier.annotations.items():
+            ann_el = ET.SubElement(cur_tier, 'ANNOTATION')
+            if isinstance(annot, EAF.Tier.AlignedAnnotation):
+                al_el = ET.SubElement(ann_el, 'ALIGNABLE_ANNOTATION', attrib={
+                    'ANNOTATION_ID': ann_id,
+                    'TIME_SLOT_REF1': annot.start_ref,
+                    'TIME_SLOT_REF2': annot.end_ref,
+                })
+                if annot.svg_ref:
+                    al_el.set('SVG_REF', annot.svg_ref)
+                ET.SubElement(al_el, 'ANNOTATION_VALUE').text = annot.value
+            else:
+                ref_el = ET.SubElement(ann_el, 'REF_ANNOTATION', attrib={
+                    'ANNOTATION_ID': ann_id,
+                    'ANNOTATION_REF': annot.ref_id,
+                })
+                if annot.prev_annot:
+                    ref_el.set('PREVIOUS_ANNOTATION', annot.prev_annot)
+                ET.SubElement(ref_el, 'ANNOTATION_VALUE').text = annot.value
+    return root
+
+
+def write_eaf(path: str | Path, eaf: EAF) -> None:
+    """
+    Записывает объект EAF в EAF/XML файл с выравниванием и ссылками.
+
+    Args:
+        path: Путь до выходного .eaf файла.
+        eaf: Экземпляр EAF для записи.
+    """
+    tree = ET.ElementTree(_eaf_to_etree_root(eaf))
+    try:
+        ET.indent(tree, space="    ", level=0)
+    except AttributeError:
+        pass
+    tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
 @dataclass
 class TextGrid:
     """
-        Представляет TextGrid-файл (формат Praat) с несколькими уровнями (tiers),
-        содержащими интервалы или метки во времени.
+    Представляет TextGrid-файл (формат Praat) с несколькими уровнями (tiers),
+    содержащими интервалы или метки во времени.
     """
 
     class Tier:
         """
-           Базовый класс для уровня в TextGrid, хранит имя, диапазон и элементы.
+        Базовый класс для уровня в TextGrid, хранит имя, диапазон и элементы.
         """
 
         def __init__(self, name: str, start: str = '1e9', end: str = '0.0', size: int = 0) -> None:
-            """
-            Инициализация уровня.
-            """
             self.name = name
             self.start = start
             self.end = end
@@ -82,190 +184,102 @@ class TextGrid:
                         file.writelines([item.start + '\n', item.end + '\n', f'"{item.label}"\n'])
 
 
-def parse_textgrid(filepath: str) -> TextGrid:
-    """
-    Разбирает TextGrid-файл в объект TextGrid.
+def _parse_textgrid_short(lines: list[str]) -> TextGrid:
+    """короткий формат Praat"""
+    short_mode = lines[4][0].isdigit()
+    xmin = lines[3].split('= ')[-1]
+    xmax = lines[4].split('= ')[-1]
+    tg = TextGrid(xmin, xmax)
+    idx = 5
+    while idx < len(lines):
+        if lines[idx].endswith('Tier"'):
+            name = lines[idx + 1].split('= ')[-1][1:-1]
+            start = lines[idx + 2].split('= ')[-1]
+            end = lines[idx + 3].split('= ')[-1]
+            size = int(lines[idx + 4].split('= ')[-1])
+            idx += 4
 
-    Args:
-        filepath: Путь до файла .TextGrid.
+            if lines[idx - 4].split('= ')[-1][1] == 'I':
+                tg.tiers.append(TextGrid.IntervalTier(name, start, end, size))
+                for i in range(size):
+                    if not short_mode:
+                        idx += 1
+                    start = lines[idx + 1].split('= ')[-1]
+                    end = lines[idx + 2].split('= ')[-1]
+                    label = lines[idx + 3].split('= ')[-1][1:-1]
+                    tg.tiers[-1].extend(TextGrid.IntervalTier.Interval(label, start, end))
+                    idx += 3
 
-    Returns:
-        TextGrid: Структура с уровнями и метками.
-    """
-    with open(filepath) as file:
-        lines = list(map(str.strip, file.readlines()))
-        short_mode = lines[4][0].isdigit()
-        xmin = lines[3].split('= ')[-1]
-        xmax = lines[4].split('= ')[-1]
-        textgrid = TextGrid(xmin, xmax)
-        cur_line_idx = 5
+            elif lines[idx - 4].split('= ')[-1][1] == 'T':
+                tg.tiers.append(TextGrid.TextTier(name, start, end, size))
+                for i in range(size):
+                    if not short_mode:
+                        idx += 1
+                    time = lines[idx + 1].split('= ')[-1]
+                    label = lines[idx + 2].split('= ')[-1][1:-1]
+                    tg.tiers[-1].extend(TextGrid.TextTier.Point(time, label))
+                    idx += 2
 
-        while cur_line_idx < len(lines):
-            if lines[cur_line_idx].endswith('Tier"'):
-                name = lines[cur_line_idx + 1].split('= ')[-1][1:-1]
-                start = lines[cur_line_idx + 2].split('= ')[-1]
-                end = lines[cur_line_idx + 3].split('= ')[-1]
-                size = int(lines[cur_line_idx + 4].split('= ')[-1])
-                cur_line_idx += 4
+        idx += 1
 
-                if lines[cur_line_idx - 4].split('= ')[-1][1] == 'I':  # IntervalTier
-                    textgrid.tiers.append(TextGrid.IntervalTier(name, start, end, size))
-                    for i in range(size):
-                        if not short_mode:
-                            cur_line_idx += 1
-                        start = lines[cur_line_idx + 1].split('= ')[-1]
-                        end = lines[cur_line_idx + 2].split('= ')[-1]
-                        label = lines[cur_line_idx + 3].split('= ')[-1][1:-1]
-                        textgrid.tiers[-1].extend(TextGrid.IntervalTier.Interval(label, start, end))
-                        cur_line_idx += 3
-
-                elif lines[cur_line_idx - 4].split('= ')[-1][1] == 'T':  # TextTier
-                    textgrid.tiers.append(TextGrid.TextTier(name, start, end, size))
-                    for i in range(size):
-                        if not short_mode:
-                            cur_line_idx += 1
-                        time = lines[cur_line_idx + 1].split('= ')[-1]
-                        label = lines[cur_line_idx + 2].split('= ')[-1][1:-1]
-                        textgrid.tiers[-1].extend(TextGrid.TextTier.Point(time, label))
-                        cur_line_idx += 2
-
-            cur_line_idx += 1
-
-    return textgrid
+    return tg
 
 
-@dataclass
-class EAF:
-    """
-    Представляет структуру аннотаций ELAN EAF.
-    """
+def _parse_textgrid_long(lines: list[str]) -> TextGrid:
+    xmin = lines[3].split('=')[-1].strip()
+    xmax = lines[4].split('=')[-1].strip()
+    tg = TextGrid(xmin, xmax)
 
-    @dataclass
-    class Tier:
-        """
-        Контейнер для аннотаций внутри уровня EAF.
-        """
+    idx = 7
+    while idx < len(lines):
+        line = lines[idx].lstrip()
 
-        @dataclass
-        class Annotation:
-            pass
+        if line.startswith("item []"):
+            idx += 1
+            continue
 
-        @dataclass
-        class AlignedAnnotation(Annotation):
-            """
-            Выравненная по времени аннотация.
+        if re.match(r"item \[\d+\]:", line):
+            tier_type = lines[idx + 1].split('=')[-1].strip().strip('"')
+            name = lines[idx + 2].split('=')[-1].strip().strip('"')
+            start = lines[idx + 3].split('=')[-1].strip()
+            end = lines[idx + 4].split('=')[-1].strip()
+            size = int(lines[idx + 5].split('=')[-1].strip())
+            idx += 6
 
-            Attributes:
-                value: Текст аннотации.
-                start_ref: Идентификатор начальной временной метки.
-                end_ref: Идентификатор конечной временной метки.
-                svg_ref: Опциональная ссылка на SVG.
-            """
-            value: str
-            start_ref: str
-            end_ref: str
-            svg_ref: str | None
+            if tier_type.lower().startswith("interval"):
+                tier = TextGrid.IntervalTier(name, start, end, size)
+                for _ in range(size):
+                    xmin_i = lines[idx + 1].split('=')[-1].strip()
+                    xmax_i = lines[idx + 2].split('=')[-1].strip()
+                    text_i = lines[idx + 3].split('=')[-1].strip().strip('"')
+                    tier.extend(TextGrid.IntervalTier.Interval(text_i, xmin_i, xmax_i))
+                    idx += 4
+            else:  # TextTier
+                tier = TextGrid.TextTier(name, start, end, size)
+                for _ in range(size):
+                    time_i = lines[idx + 1].split('=')[-1].strip()
+                    text_i = lines[idx + 2].split('=')[-1].strip().strip('"')
+                    tier.extend(TextGrid.TextTier.Point(time_i, text_i))
+                    idx += 3
 
-        @dataclass
-        class RefAnnotation(Annotation):
-            ref_id: str
-            prev_annot: str | None
-
-        annotations: dict[str, 'EAF.Tier.Annotation'] = field(default_factory=dict)
-
-    time_slots: dict[str, str | None] = field(default_factory=dict)
-    tiers: dict[str, Tier] = field(default_factory=dict)
-
-
-def parse_eaf(filepath: str) -> EAF:
-    """
-    Разбирает EAF-файл (формат ELAN) в объект EAF.
-
-    :param filepath:
-    :return: Структура аннотаций и временных меток.
-    """
-    eaf = EAF()
-
-    root = ET.parse(filepath).getroot()
-    for child in root:
-        match child.tag:
-            case 'TIME_ORDER':
-                for elem in child:
-                    eaf.time_slots[elem.attrib['TIME_SLOT_ID']] = elem.attrib.get('TIME_VALUE', None)
-            case 'TIER':
-                tier_id = child.attrib['TIER_ID']
-                eaf.tiers[tier_id] = EAF.Tier()
-                for elem in child:
-                    if elem.tag == 'ANNOTATION':
-                        for annot in elem:
-                            if annot.tag == 'ALIGNABLE_ANNOTATION':
-                                value = annot[0].text
-                                id = annot.attrib['ANNOTATION_ID']
-                                start_ref = annot.attrib['TIME_SLOT_REF1']
-                                end_ref = annot.attrib['TIME_SLOT_REF2']
-                                svg_ref = annot.attrib.get('SVG_REF', None)
-                                eaf.tiers[tier_id].annotations[id] = EAF.Tier.AlignedAnnotation(value, start_ref,
-                                                                                                end_ref,
-                                                                                                svg_ref)
-                            elif annot.tag == 'REF_ANNOTATION':
-                                id = annot.attrib['ANNOTATION_ID']
-                                ref_id = annot.attrib['ANNOTATION_REF']
-                                prev_annot = annot.attrib.get('PREVIOUS_ANNOTATION', None)
-                                eaf.tiers[tier_id].annotations[id] = EAF.Tier.RefAnnotation(ref_id, prev_annot)
-
-    return eaf
+            tg.tiers.append(tier)
+        else:
+            idx += 1
+    return tg
 
 
-def write_eaf(path: str, eaf: 'EAF') -> None:
-    """
-    Записывает объект EAF в EAF/XML файл с выравниванием и ссылками.
-
-    Args:
-        path: Путь до выходного .eaf файла.
-        eaf: Экземпляр EAF для записи.
-    """
-
-    def _eaf_to_etree_root(eaf: 'EAF') -> ET.Element:
-        date = datetime.now(timezone(timedelta(hours=3))).isoformat()
-
-        root = ET.Element('ANNOTATION_DOCUMENT', attrib={'AUTHOR': '', 'DATE': date, 'VERSION': '1.0'})
-
-        ET.SubElement(root, 'HEADER', attrib={'MEDIA_FILE': '', 'TIME_UNITS': 'milliseconds'})
-        time_order = ET.SubElement(root, 'TIME_ORDER')
-
-        for time_slot_id in eaf.time_slots:
-            ET.SubElement(time_order, 'TIME_SLOT',
-                          attrib={'TIME_SLOT_ID': time_slot_id, 'TIME_VALUE': eaf.time_slots[time_slot_id]})
-
-        for tier_id in eaf.tiers:
-            cur_tier = ET.SubElement(root, 'TIER', attrib={'TIER_ID': tier_id, 'LINGUISTIC_TYPE_REF': 'default-lt'})
-            for annotation_id, annotation in eaf.tiers[tier_id].annotations.items():
-                cur_annot = ET.SubElement(cur_tier, 'ANNOTATION')
-                if isinstance(annotation, EAF.Tier.AlignedAnnotation):
-                    elem = ET.SubElement(cur_annot, 'ALIGNABLE_ANNOTATION',
-                                         attrib={'ANNOTATION_ID': annotation_id, 'TIME_SLOT_REF1': annotation.start_ref,
-                                                 'TIME_SLOT_REF2': annotation.end_ref})
-                    if annotation.svg_ref:
-                        elem.attrib['SVG_REF'] = annotation.svg_ref
-                    ET.SubElement(elem, 'ANNOTATION_VALUE').text = annotation.value
-                elif isinstance(annotation, EAF.Tier.RefAnnotation):
-                    elem = ET.SubElement(cur_annot, 'REF_ANNOTATION',
-                                         attrib={'ANNOTATION_ID': annotation_id, 'ANNOTATION_REF': annotation.ref_id})
-                    elem.text = annotation.value
-                    if annotation.prev_annot:
-                        elem.attrib['PREVIOUS_ANNOTATION'] = annotation.prev_annot
-                    ET.SubElement(elem, 'ANNOTATION_VALUE').text = annotation.value
-
-        return root
-
-    root = _eaf_to_etree_root(eaf)
-    pretty_xml = minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent='  ')
-
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(pretty_xml)
+def parse_textgrid(filepath: str | Path, *, mode: str = "short") -> TextGrid:
+    """универсальный вызов: mode='short' | 'long'"""
+    with open(filepath, encoding='utf-8') as fh:
+        lines = [ln.strip() for ln in fh]
+    if mode == "short":
+        return _parse_textgrid_short(lines)
+    if mode == "long":
+        return _parse_textgrid_long(lines)
+    raise ValueError(f"Unknown TextGrid mode: {mode}")
 
 
-def textgrid_to_eaf(textgrid: TextGrid) -> EAF:
+def textgrid_to_eaf(tg: TextGrid) -> EAF:
     """
     Конвертирует TextGrid-структуру в EAF-структуру.
 
@@ -276,34 +290,27 @@ def textgrid_to_eaf(textgrid: TextGrid) -> EAF:
         EAF: Эквивалентный EAF объект.
     """
     eaf = EAF()
-
     ts_id = 1
     a_id = 1
     time_stamps: dict[str, str] = {}
-    for tier in textgrid.tiers:
+
+    for tier in tg.tiers:
+        if not isinstance(tier, TextGrid.IntervalTier):
+            continue
         annotations: dict[str, EAF.Tier.AlignedAnnotation] = {}
         for item in tier.items:
             start = str(int(float(item.start) * 1000))
             if start not in time_stamps:
-                time_stamps[start] = f'ts{ts_id}'
+                time_stamps[start] = f"ts{ts_id}";
                 ts_id += 1
-
             end = str(int(float(item.end) * 1000))
             if end not in time_stamps:
-                time_stamps[end] = f'ts{ts_id}'
+                time_stamps[end] = f"ts{ts_id}";
                 ts_id += 1
-
-            annotations[f'a{a_id}'] = EAF.Tier.AlignedAnnotation(item.label, time_stamps[start], time_stamps[end], None)
+            annotations[f"a{a_id}"] = EAF.Tier.AlignedAnnotation(
+                item.label, time_stamps[start], time_stamps[end], None
+            )
             a_id += 1
-
         eaf.tiers[tier.name] = EAF.Tier(annotations)
-        eaf.time_slots = dict(zip(time_stamps.values(), time_stamps.keys()))
-
+    eaf.time_slots = {v: k for k, v in time_stamps.items()}
     return eaf
-
-
-def convert(filepath: str) -> None:
-    if filepath.endswith('.TextGrid'):
-        textgrid = parse_textgrid(filepath)
-        path = filepath.split('.')[0] + '.eaf'
-        write_eaf(path, textgrid_to_eaf(textgrid))

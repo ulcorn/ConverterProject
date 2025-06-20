@@ -25,15 +25,12 @@ def convert(input_tg: str | Path,
             raise FileNotFoundError(path_in)
         if path_in.suffix.lower() not in {".textgrid", ".tg"}:
             raise ValueError("Файл должен иметь расширение .TextGrid / .tg")
+        tg = core.parse_textgrid(path_in, mode=mode)
+        core.write_eaf(path_out, core.textgrid_to_eaf(tg))
 
-        core.convert(str(path_in))
-
-        produced = path_in.with_suffix(".eaf")
-        if not produced.exists():
+        if not path_out.exists():
             raise RuntimeError("Ядро не создало выходной .eaf")
 
-        produced.replace(path_out)
-
     except (FileNotFoundError, UnicodeDecodeError, ET.ParseError,
-            ValueError, RuntimeError, core.ConversionError) as exc:
+            ValueError, RuntimeError) as exc:
         raise ConversionError(f"TextGrid → EAF: {exc}") from exc
